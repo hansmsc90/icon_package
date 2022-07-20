@@ -32,43 +32,46 @@ def prepare_cpu(nworker=1,memory='64GB'):
     return client
 
 
-def fix_time(ds):
+def fix_time(dataset):
+    # used to correct time inh dpp experiments, which have not correct time information
     # we need be carefull witht he attributes in the time data array, because of a weird xarray bug: https://github.com/pydata/xarray/issues/3739
-        t = ds.time
-        time1 = pd.to_datetime(t.values, format='%Y%m%d')
-        hours = np.round((t.values % 1) * 24,2)
+        oldtime = dataset.time
+        correcttime = pd.to_datetime(oldtime.values, format='%Y%m%d')
+        hours = np.round((oldtime.values % 1) * 24,2)
         minutes = (hours % 1) * 60
-        time2 = pd.to_datetime(hours, format='%H')
-        time3 = pd.to_datetime(minutes, format='%M')
+        hoursintime = pd.to_datetime(hours, format='%H')
+        minutesintime = pd.to_datetime(minutes, format='%M')
         return xr.DataArray(
-                pd.to_datetime(pd.to_numeric(time3-time3[0]) + pd.to_numeric(time2-time2[0]) + pd.to_numeric(time1)),
-                dims=t.dims,attrs={k:v for k,v in t.attrs.items() if k != "units" and k != "calendar"})
+                pd.to_datetime(pd.to_numeric(minutesintime-minutesintime[0]) + pd.to_numeric(hoursintime-hoursintime[0]) + pd.to_numeric(correcttime)),
+                dims=oldtime.dims,attrs={k:v for k,v in oldtime.attrs.items() if k != "units" and k != "calendar"})
 
 
-def mask_coord(dset):
-        filegr = '/work/mh0287/m300083/experiments/dpp0066/bc_land_frac.nc'
-        gridset = xr.open_dataset(filegr,chunks='auto').rename({'cell':'ncells'})
-        land_sea_mask = gridset.notsea.persist()
-        mask = land_sea_mask.values
+def mask_coord(dataset):
+    ####Introduce the land-sea mask and coordinates in the dataset
+    ####ICON gridfile contains longitude and latitude information in radians. Need to convert *180/pi
+        gridfile = '/work/mh0287/m300083/experiments/dpp0066/bc_land_frac.nc'
+        gridset = xr.open_dataset(gridfile,chunks='auto').rename({'cell':'ncells'})
+        landseamask = gridset.notsea.persist()
         clat = gridset.clat.values*180/np.pi
         clon = gridset.clon.values*180/np.pi
-        dset = dset.assign_coords(clon=("ncells",clon),clat=("ncells",clat))
-        dset = dset.assign_coords(land_sea_mask=("ncells",mask))
-        return dset
-
+        dataset = dataset.assign_coords(clon=("ncells",clon),clat=("ncells",clat))
+        dataset = dataset.assign_coords(land_sea_mask=("ncells",landseamask.values))
+        return dataset
 
 def area_model(lat,lon,mask):
-    file = '/work/mh0287/m300083/experiments/dpp0066/icon_grid_0015_R02B09_G.nc'
-    dset = xr.open_dataset(file,chunks=({'cell': 2097152})).cell_area_p.rename({'cell':'ncells'})
+    ### mask = 0 to select ocean
+    ### mask = 1 to select land
+    #####Calculate the area of each grid cell and the total of the chosen domain
+    gridfile = '/work/mh0287/m300083/experiments/dpp0066/icon_grid_0015_R02B09_G.nc'
+    dataset = xr.open_dataset(gridfile,chunks=({'cell': 2097152})).cell_area_p.rename({'cell':'ncells'})
     if mask is not None :
         #####mask
-        filegr = '/work/mh0287/m300083/experiments/dpp0066/bc_land_frac.nc'
-        gridset = xr.open_dataset(filegr,chunks='auto').rename({'cell':'ncells'})
-        land_sea_mask = gridset.notsea.persist()
-        maskl = land_sea_mask.values
-        area = dset.where(((dset.clat>=lat[0]/180*np.pi) & (dset.clat<=lat[1]/180*np.pi)) & ((dset.clon>=lon[0]/180*np.pi) & (dset.clon<=lon[1]/180*np.pi)) & (maskl==mask),drop=True)
+        maskfile = '/work/mh0287/m300083/experiments/dpp0066/bc_land_frac.nc'
+        maskdset = xr.open_dataset(maskfile,chunks='auto').rename({'cell':'ncells'})
+        landseamask = maskdset.notsea.persist()
+        area = dataset.where(((dataset.clat>=lat[0]/180*np.pi) & (dataset.clat<=lat[1]/180*np.pi)) & ((dataset.clon>=lon[0]/180*np.pi) & (dataset.clon<=lon[1]/180*np.pi)) & (landseamask==mask),drop=True)
     else:
-        area = dset.where(((dset.clat>=lat[0]/180*np.pi) & (dset.clat<=lat[1]/180*np.pi)) & ((dset.clon>=lon[0]/180*np.pi) & (dset.clon<=lon[1]/180*np.pi)),drop=True)
+        area = dataset.where(((dataset.clat>=lat[0]/180*np.pi) & (dataset.clat<=lat[1]/180*np.pi)) & ((dataset.clon>=lon[0]/180*np.pi) & (dataset.clon<=lon[1]/180*np.pi)),drop=True)
     global_area = area.sum()
     return area, global_area
 
@@ -103,15 +106,15 @@ def calculate_meridional(data,lat,lon,interval,mask=None):
 
 ######final functions
 ######spatial mean
-def spatial_mean(files,var,time,lat,lon,t_step='1D',mask=None,better_time=True):
+def spatial_mean(files,var,time,lat,lon,time_step='1D',mask=None,better_time=True):
     ### mask = 0 to select ocean
     ### mask = 1 to select land
     if better_time == True :
         dsetvar = xr.open_mfdataset(files, engine='netcdf4',combine='by_coords',chunks={'ncells':-1,'time':1})[var]
-        variable = dsetvar.assign_coords(time=fix_time(dsetvar)).sel(time=slice(time[0],time[1])).chunk({'time':96}).resample(time=t_step).mean('time')
+        variable = dsetvar.assign_coords(time=fix_time(dsetvar)).sel(time=slice(time[0],time[1])).chunk({'time':96}).resample(time=time_step).mean('time')
     else:
         dsetvar = xr.open_mfdataset(files, engine='netcdf4',combine='by_coords',chunks={'ncells':-1,'time':1})[var].sel(time=slice(time[0],time[1]))
-        variable = dsetvar.resample(time=t_step).mean('time')
+        variable = dsetvar.resample(time=time_step).mean('time')
     ####area
     variable = mask_coord(variable)
     area,global_area = area_model(lat,lon,mask)
@@ -146,15 +149,15 @@ def temporal_mean(files,var,time,lat,lon,mask=None,better_time=True):
 
 ######final functions
 ######zonal  mean
-def zonal_mean(files,var,time,lat,lon,interval,t_step='1D',mask=None,better_time=True):
+def zonal_mean(files,var,time,lat,lon,interval,time_step='1D',mask=None,better_time=True):
     ### mask = 0 to select ocean
     ### mask = 1 to select land
     if better_time == True :
         dsetvar = xr.open_mfdataset(files, engine='netcdf4',combine='by_coords',chunks='auto')[var]
-        variable = dsetvar.assign_coords(time=fix_time(dsetvar)).sel(time=slice(time[0],time[1])).resample(time=t_step).mean('time')
+        variable = dsetvar.assign_coords(time=fix_time(dsetvar)).sel(time=slice(time[0],time[1])).resample(time=time_step).mean('time')
     else:
         dsetvar = xr.open_mfdataset(files, engine='netcdf4',combine='by_coords',chunks='auto')[var].sel(time=slice(time[0],time[1]))
-        variable = dsetvar.resample(time=t_step).mean('time')
+        variable = dsetvar.resample(time=time_step).mean('time')
     ####area
     variable = mask_coord(variable)
     ###calculate
@@ -165,15 +168,15 @@ def zonal_mean(files,var,time,lat,lon,interval,t_step='1D',mask=None,better_time
     var_final = dask.compute(cal_mean)
     return var_final[0]
 
-def meridional_mean(files,var,time,lat,lon,interval,t_step='1D',mask=None,better_time=True):
+def meridional_mean(files,var,time,lat,lon,interval,time_step='1D',mask=None,better_time=True):
     ### mask = 0 to select ocean
     ### mask = 1 to select land
     if better_time == True :
         dsetvar = xr.open_mfdataset(files, engine='netcdf4',combine='by_coords',chunks='auto')[var]
-        variable = dsetvar.assign_coords(time=fix_time(dsetvar)).sel(time=slice(time[0],time[1])).resample(time=t_step).mean('time')
+        variable = dsetvar.assign_coords(time=fix_time(dsetvar)).sel(time=slice(time[0],time[1])).resample(time=time_step).mean('time')
     else:
         dsetvar = xr.open_mfdataset(files, engine='netcdf4',combine='by_coords',chunks='auto')[var].sel(time=slice(time[0],time[1]))
-        variable = dsetvar.resample(time=t_step).mean('time')
+        variable = dsetvar.resample(time=time_step).mean('time')
     ####area
     variable = mask_coord(variable)
     ###calculate
