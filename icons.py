@@ -149,7 +149,7 @@ def temporal_mean(files,var,time,lat,lon,mask=None,better_time=True):
 
 ######final functions
 ######zonal  mean
-def zonal_mean(files,var,time,lat,lon,interval,time_step='1D',mask=None,better_time=True):
+def zonal_mean(files,var,time,lat,lon,interval,time_step='1D',mask=None,better_time=True,test=False):
     ### mask = 0 to select ocean
     ### mask = 1 to select land
     if better_time == True :
@@ -161,7 +161,10 @@ def zonal_mean(files,var,time,lat,lon,interval,time_step='1D',mask=None,better_t
     ####area
     variable = mask_coord(variable)
     ###calculate
-    cal_mean = calculate_zonal(variable,lat,lon,interval,mask)
+    if test == False:
+        cal_mean = calculate_zonal(variable,lat,lon,interval,mask)
+    else:
+        cal_mean = calculate_zonal(variable*0+1,lat,lon,interval,mask)
     ###dask
     jobs = dask.persist(cal_mean)
     progress(jobs, notebook=False)
